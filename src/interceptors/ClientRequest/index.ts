@@ -1,5 +1,6 @@
 import http from 'node:http'
 import https from 'node:https'
+import { syncBuiltinESMExports } from 'node:module'
 import { runInRequestContext } from '#/src/request-context'
 import { patchesRegistry } from '#/src/utils/patches-registry'
 import { forwardHttpEvents } from '#/src/interceptors/http/forward-events'
@@ -21,6 +22,19 @@ export class ClientRequestInterceptor extends Interceptor<HttpRequestEventMap> {
     const requestSource = Interceptor.singleton(NodeHttpRequestSource)
     const requestLogger = this.logger
     requestSource.apply(this)
+
+    /**
+     * ESM named imports of builtin modules (e.g. `import { request } from 'node:https'`)
+     * are bound to a snapshot of the module exports taken at import time.
+     * Patching `http`/`https` below does not reach those bindings until
+     * the exports are synced. This subscription is pushed first so it runs
+     * last on dispose, after the patches have been restored, syncing the
+     * original functions back to the ESM bindings.
+     */
+    this.subscriptions.push(() => {
+      syncBuiltinESMExports()
+    })
+
     this.subscriptions.push(() => {
       requestSource.dispose(this)
     })
@@ -74,5 +88,13 @@ export class ClientRequestInterceptor extends Interceptor<HttpRequestEventMap> {
         }
       })
     )
+
+    /**
+     * Sync the patched functions to the ESM bindings of the builtin
+     * `http`/`https` modules. Without this, `import { request } from 'node:https'`
+     * keeps referring to the original function until the patched export
+     * is called once through another import style.
+     */
+    syncBuiltinESMExports()
   }
 }
